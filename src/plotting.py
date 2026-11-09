@@ -7,6 +7,8 @@ Text is always neutral ink, never the series colour.
 """
 from pathlib import Path
 
+import numpy as np
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
@@ -62,3 +64,28 @@ def save_figure(fig, name, folder="../figures"):
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, bbox_inches="tight")
     return path
+
+
+def dot_scoreboard(ax, table, columns, colors, labels=None, xlabel="", highlight=None):
+    """Dot plot comparing methods (rows of ``table``) on several metrics (``columns``).
+
+    One row per method, one coloured dot per metric. Easier to read than a
+    grouped bar chart when the question is "which method is lowest".
+
+    highlight : optional method name drawn in bold (the chosen method)
+    """
+    labels = labels or {c: c for c in columns}
+    y = np.arange(len(table))[::-1]                     # first method at the top
+    for col in columns:
+        ax.scatter(table[col], y, s=46, color=colors[col], edgecolor=SURFACE, linewidth=0.8,
+                   label=labels[col], zorder=3)
+    for yi in y:                                        # faint guide line per method
+        ax.axhline(yi, color=GRID, lw=0.6, zorder=1)
+    ax.set_yticks(y, table.index)
+    if highlight is not None and highlight in table.index:
+        for tick in ax.get_yticklabels():
+            if tick.get_text() == highlight:
+                tick.set_fontweight("bold")
+    ax.set_xlabel(xlabel)
+    ax.grid(axis="y", visible=False)
+    return ax

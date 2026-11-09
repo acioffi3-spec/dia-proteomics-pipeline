@@ -39,3 +39,6 @@ The output should match the SHA-256 above.
 | `data.diannoutput.qc.parquet` | 01 (cache of the raw report) | 01 |
 | `01_precursors_filtered.parquet` | 01 | 02 |
 | `01_sample_table_qc.csv` | 01 | 02 |
+| `02_precursors_normalized.parquet` | 02 (long: precursor, run, log2 normalized) | 03 |
+| `02_proteins_maxlfq.parquet` | 02 (protein groups x runs, log2, not imputed) | 03 |
+| `02_sample_table.csv` | 02 (adds the `prep_suspect` flag) | 03 |

@@ -9,7 +9,7 @@ A step-by-step, reproducible analysis of public data-independent acquisition (DI
 | # | Notebook | Data | Status |
 |---|---|---|---|
 | 01 | [Import and quality control](notebooks/01_import_and_qc.ipynb) | Plasma/serum SWATH, DIA-NN (PXD018874) | ✅ |
-| 02 | Normalization, drift correction and imputation | same | planned |
+| 02 | [Normalization, drift correction and protein roll-up](notebooks/02_normalization_and_rollup.ipynb) | same | ✅ |
 | 03 | Differential abundance calibrated against known truth | LFQ benchmark (PXD028735) | planned |
 
 ## Notebook 01 in one figure
@@ -23,6 +23,19 @@ Once each run's signal is corrected for instrument drift, the weak runs cluster 
 - **Drift.** MS signal falls 41% across the sequence, which raises the raw CV from 7% (short-term) to 21%. That variance is what normalization has to remove.
 - **Positive control.** Fibrinogen, which clotting removes from serum, comes out 16–300x higher in plasma than serum, while albumin is unchanged.
 - **Inherited filters.** The protein-group FDR filter inherited from the report is replaced by a documented rule that approximates a global FDR. Its cost is shown explicitly.
+
+## Notebook 02 in one figure
+
+![Normalization scoreboard](figures/02_normalization_scoreboard.png)
+
+Eight normalization strategies, scored on the same scorecard and always on runs they were not fitted on.
+
+**Key Notebook 02 findings**
+- **Retention-time-dependent normalization does most of the work.** It halves sample CVs. Our implementation reproduces DIA-NN's method (r = 0.9998).
+- **A precursor-specific drift component survives it.** A per-precursor drift correction anchored on the samples removes it, which is valid because run order was randomized. This is the only method that leaves no principal component tied to injection order.
+- **The pooled QC drifts about 1.2× faster than the samples.** Correcting samples against the QC, as the authors did, over-corrects them. The QC is kept for monitoring, not correction.
+- **The remaining sample CV (~11%) is ~6.5% injection noise plus ~9% sample-preparation noise.** The preparation part cannot be normalized away.
+- **Protein roll-up uses our own MaxLFQ**, validated on synthetic data. Requiring ≥ 2 shared precursors stops it from reporting absent fibrinogen-γ in serum as "equal to plasma".
 
 ## Data
 
@@ -59,10 +72,10 @@ jupyter lab
 
 Then:
 1. Put the data file in `data/raw/` as described in [`data/README.md`](data/README.md).
-2. Open `notebooks/01_import_and_qc.ipynb` and select the project kernel.
+2. Open the notebooks in order (`01_...`, then `02_...`) and select the project kernel. Each notebook reads the previous one's outputs from `data/processed/`.
 3. Run all cells.
 
-Notebook 01 runs in about a minute on a laptop with 8 GB RAM. The first run also writes a parquet cache to `data/processed/`.
+On a laptop with 8 GB RAM, Notebook 01 runs in about a minute and Notebook 02 in about 8 minutes (cross-fitting refits every drift curve several times). The first run also writes a parquet cache to `data/processed/`.
 
 **Two Windows pitfalls:**
 - **Keep the project outside `Documents` and OneDrive.** Controlled Folder Access or sync software can stop Jupyter writing its checkpoint folder.
@@ -79,6 +92,9 @@ src/            reusable functions, documented and imported by the notebooks
   diann_io.py   read DIA-NN reports
   metadata.py   build the sample table from run names
   qc.py         QC metrics (depth, missingness, CV, drift, RT, PCA, robust z)
+  normalize.py  median, RT-dependent, QC-anchored and sample-anchored corrections; cross-fitting
+  rollup.py     protein roll-up: top-N, median polish, MaxLFQ
+  evaluate.py   the shared scorecard used to compare normalizations
   plotting.py   shared figure style and colour palette
 figures/        exported figures (PNG)
 ```
@@ -88,4 +104,5 @@ figures/        exported figures (PNG)
 - **Quantities.** Quantities stay on the linear scale until a function says otherwise. Every log transform is explicit (`np.log2`).
 - **Outlier rules.** Robust statistics (median and MAD) are used for outlier rules, so that outliers cannot hide by inflating the SD.
 - **QC thresholds.** QC thresholds are set before results are inspected and are applied as written. Patterns found afterwards are carried forward as hypotheses, not used to move thresholds.
+- **Honest scoring.** Any method fitted on some runs is scored on runs it never saw (held-out QC injections, or cross-fitting).
 - **Colours.** Each sample type keeps one fixed colour in every figure (plasma blue, serum orange, pooled QC green). The palette was checked for colour-vision deficiency.
