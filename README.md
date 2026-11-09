@@ -66,7 +66,7 @@ Notebook 01 runs in about a minute on a laptop with 8 GB RAM. The first run also
 
 **Two Windows pitfalls:**
 - **Keep the project outside `Documents` and OneDrive.** Controlled Folder Access or sync software can stop Jupyter writing its checkpoint folder.
-- **Turn on File Explorer → View → Show → File name extensions before renaming the data file.** Otherwise a hidden second extension (`.tsv.tsv`) can creep in.
+- **Keep the data file name exactly as PRIDE provides it** (`data.diannoutput.qc.tsv`). If you ever rename files, turn on File Explorer → View → Show → File name extensions first, so a hidden second extension (`.tsv.tsv`) cannot creep in.
 
 ## Repository layout
 
