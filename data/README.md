@@ -42,3 +42,5 @@ The output should match the SHA-256 above.
 | `02_precursors_normalized.parquet` | 02 (long: precursor, run, log2 normalized) | 03 |
 | `02_proteins_maxlfq.parquet` | 02 (protein groups x runs, log2, not imputed) | 03 |
 | `02_sample_table.csv` | 02 (adds the `prep_suspect` flag) | 03 |
+| `03_sim_null.parquet`, `03_sim_spike.parquet`, `03_sim_imputation.parquet` | 03 (cached simulation results) | 03 |
+| `03_recommended_settings.json` | 03 (the calibrated analysis settings) | later notebooks |

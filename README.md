@@ -10,7 +10,7 @@ A step-by-step, reproducible analysis of public data-independent acquisition (DI
 |---|---|---|---|
 | 01 | [Import and quality control](notebooks/01_import_and_qc.ipynb) | Plasma/serum SWATH, DIA-NN (PXD018874) | ✅ |
 | 02 | [Normalization, drift correction and protein roll-up](notebooks/02_normalization_and_rollup.ipynb) | same | ✅ |
-| 03 | Differential abundance calibrated against known truth | LFQ benchmark (PXD028735) | planned |
+| 03 | [Differential abundance calibrated against a known truth](notebooks/03_differential_abundance_calibration.ipynb) | same, with simulated known changes | ✅ |
 
 ## Notebook 01 in one figure
 
@@ -37,12 +37,25 @@ Eight normalization strategies, scored on the same scorecard and always on runs 
 - **The remaining sample CV (~11%) is ~6.5% injection noise plus ~9% sample-preparation noise.** The preparation part cannot be normalized away.
 - **Protein roll-up uses our own MaxLFQ**, validated on synthetic data. Requiring ≥ 2 shared precursors stops it from reporting absent fibrinogen-γ in serum as "equal to plasma".
 
+## Notebook 03 in one figure
+
+![Empirical FDR and power by test, replicates and noise](figures/03_fdr_power.png)
+
+Known changes are spiked into technical replicates, so every call can be graded as right or wrong.
+
+**Key Notebook 03 findings**
+- **Which test:** a moderated t-test (limma-style empirical Bayes, with an intensity-dependent prior; implemented here and validated on synthetic data) keeps the false discovery rate near 5%. At 3 vs 3 with realistic noise, it finds 70% of true changes, versus 28% for Welch's t-test.
+- **Shortcuts are unsafe:** a fold-change cutoff alone lets up to 33% false hits through, and unadjusted p < 0.05 lets 16–26% through.
+- **No imputation for testing:** KNN imputation biases large changes. Proteins absent from one group (on/off) are truly changed only about half the time, so they get their own calibrated tier (about 5% false calls).
+- **Design guidance:** with replicate CVs around 18%, 3 replicates find about 80% of 2-fold changes but only a third of 1.5-fold changes.
+- **Reusable:** `stats.differential(proteins, design, "DMSO", "compound")` runs the whole calibrated analysis on any dataset from a design table.
+
 ## Data
 
 | Notebook | Source | Citation |
 |---|---|---|
 | 01–02 | PRIDE [PXD018874](https://www.ebi.ac.uk/pride/archive/projects/PXD018874), platform-validation runs | Messner CB *et al.* *Cell Systems* 2020;11:11–24.e4. [doi:10.1016/j.cels.2020.05.012](https://doi.org/10.1016/j.cels.2020.05.012) |
-| 03 | PRIDE [PXD028735](https://www.ebi.ac.uk/pride/archive/projects/PXD028735) | Van Puyvelde B *et al.* *Sci Data* 2022;9:126 |
+| 03 | Notebook 02 outputs (PXD018874), with simulated known changes | (no additional download) |
 
 Data files are not stored in this repository. See [`data/README.md`](data/README.md) for what to download and where to put it.
 
@@ -75,7 +88,7 @@ Then:
 2. Open the notebooks in order (`01_...`, then `02_...`) and select the project kernel. Each notebook reads the previous one's outputs from `data/processed/`.
 3. Run all cells.
 
-On a laptop with 8 GB RAM, Notebook 01 runs in about a minute and Notebook 02 in about 8 minutes (cross-fitting refits every drift curve several times). The first run also writes a parquet cache to `data/processed/`.
+On a laptop with 8 GB RAM, Notebook 01 runs in about a minute, Notebook 02 in about 8 minutes (cross-fitting refits every drift curve several times) and Notebook 03 in about 5 minutes the first time (simulations; cached afterwards, set `RERUN = True` to regenerate). The first run also writes a parquet cache to `data/processed/`.
 
 **Two Windows pitfalls:**
 - **Keep the project outside `Documents` and OneDrive.** Controlled Folder Access or sync software can stop Jupyter writing its checkpoint folder.
@@ -95,6 +108,10 @@ src/            reusable functions, documented and imported by the notebooks
   normalize.py  median, RT-dependent, QC-anchored and sample-anchored corrections; cross-fitting
   rollup.py     protein roll-up: top-N, median polish, MaxLFQ
   evaluate.py   the shared scorecard used to compare normalizations
+  stats.py      Welch and moderated t (empirical Bayes, optional intensity trend), BH; stats.differential()
+  impute.py     imputation strategies (down-shifted normal, run minimum, KNN)
+  simulate.py   null splits, biological noise, precursor-level spike-ins with detection loss
+  benchmark.py  run simulation grids and score empirical FDR, power and fold-change accuracy
   plotting.py   shared figure style and colour palette
 figures/        exported figures (PNG)
 ```
@@ -105,4 +122,5 @@ figures/        exported figures (PNG)
 - **Outlier rules.** Robust statistics (median and MAD) are used for outlier rules, so that outliers cannot hide by inflating the SD.
 - **QC thresholds.** QC thresholds are set before results are inspected and are applied as written. Patterns found afterwards are carried forward as hypotheses, not used to move thresholds.
 - **Honest scoring.** Any method fitted on some runs is scored on runs it never saw (held-out QC injections, or cross-fitting).
+- **Validate, then use.** Every statistical method is checked on synthetic data with a known answer before it is applied to real data.
 - **Colours.** Each sample type keeps one fixed colour in every figure (plasma blue, serum orange, pooled QC green). The palette was checked for colour-vision deficiency.

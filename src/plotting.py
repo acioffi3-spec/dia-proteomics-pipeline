@@ -89,3 +89,37 @@ def dot_scoreboard(ax, table, columns, colors, labels=None, xlabel="", highlight
     ax.set_xlabel(xlabel)
     ax.grid(axis="y", visible=False)
     return ax
+
+
+def volcano(ax, result, label=None, alpha=0.05, title=None):
+    """Volcano plot of a ``stats.differential`` result: log2 fold change vs -log10 q.
+
+    Points are coloured by call; on/off proteins are drawn as hollow markers so
+    they are never confused with proteins tested without imputation.
+    label : optional dict {protein: text} to annotate selected proteins
+    """
+    colors = {"up": "#eb6834", "down": "#2a78d6", "not significant": "#c3c2b7"}
+    r = result[result["p"].notna()].copy()
+    r["y"] = -np.log10(r["q"].clip(lower=1e-300))
+    for call, color in colors.items():
+        for tier, filled in [("tested", True), ("on/off", False)]:
+            sel = (r["call"] == call) & (r["tier"] == tier)
+            if sel.any():
+                ax.scatter(r.loc[sel, "log2fc"], r.loc[sel, "y"], s=22 if filled else 30,
+                           facecolor=color if filled else "none", edgecolor=color if not filled else SURFACE,
+                           linewidth=1.2 if not filled else 0.5,
+                           label=f"{call}{' (on/off)' if not filled else ''}")
+    ax.axhline(-np.log10(alpha), color=INK_MUTED, lw=1, ls=":")
+    ax.axvline(0, color=AXIS, lw=1)
+    if label:
+        # Alternate label offsets (above / below the point) so neighbouring labels do not overlap
+        offsets = [(6, 4), (6, -11), (-38, 6)]
+        for i, (prot, text) in enumerate(label.items()):
+            if prot in r.index:
+                ax.annotate(text, (r.loc[prot, "log2fc"], r.loc[prot, "y"]), xytext=offsets[i % 3],
+                            textcoords="offset points", fontsize=8, color=INK)
+    ax.set_xlabel("log2 fold change")
+    ax.set_ylabel("-log10 q (BH)")
+    if title:
+        ax.set_title(title)
+    return ax
