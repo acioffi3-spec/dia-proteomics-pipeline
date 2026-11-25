@@ -70,3 +70,49 @@ def test_score_counts_true_and_false_calls_exactly():
     assert s["calls / sim"] == 4
     assert np.isclose(s["empirical FDR"], 2 / 4)      # wrong-direction call + null call
     assert np.isclose(s["power"], 2 / 4)              # 2 of 4 truly changed proteins found correctly
+
+
+def _toy_experiment(rng, n_runs=24):
+    """Precursors (3 per protein) on 24 runs split over 2 plates."""
+    runs = [f"r{i:02d}" for i in range(n_runs)]
+    prec = pd.DataFrame(rng.normal(14, 2, (90, 1)) + rng.normal(0, 0.05, (90, n_runs)), columns=runs)
+    protein_of = pd.Series([f"P{i // 3}" for i in range(90)], index=prec.index)
+    plates = pd.Series(["1"] * (n_runs // 2) + ["2"] * (n_runs // 2), index=runs)
+    return prec, protein_of, plates
+
+
+def test_simulation_can_keep_one_experiment_inside_one_plate(rng):
+    prec, protein_of, plates = _toy_experiment(rng)
+    for _ in range(5):
+        res = benchmark.simulate_once(prec, protein_of, plates.index, 3, rng, tests=("welch",), batches=plates)
+        assert len(res) > 0
+    seen = []
+    benchmark.simulate_once(prec, protein_of, plates.index, 3, rng, tests=("welch",), batches=plates,
+                            normalize=lambda m: seen.append(list(m.columns)) or m)
+    assert plates[seen[0]].nunique() == 1                 # all six runs on the same plate
+
+
+def test_simulation_normalizes_only_the_experiments_own_runs(rng):
+    prec, protein_of, plates = _toy_experiment(rng)
+    seen = []
+
+    def spy(matrix):
+        seen.append(list(matrix.columns))
+        return matrix
+
+    benchmark.simulate_once(prec, protein_of, plates.index, 3, rng, tests=("welch",), normalize=spy)
+    assert len(seen) == 1 and len(seen[0]) == 6           # the 6 sampled runs, not all 24
+
+
+def test_score_bootstrap_interval_brackets_the_estimate():
+    rng = np.random.default_rng(1)
+    rows = []
+    for sim in range(40):
+        truth = np.r_[np.ones(10), np.zeros(40)]
+        q = np.where(truth == 1, 0.001, rng.uniform(0, 1, 50))           # true changes always called
+        rows.append(pd.DataFrame({"p": q, "q": q, "log2fc": 1.0, "truth": truth, "sim": sim,
+                                  "n_per_group": 3, "noise_sd": 0.0, "test": "t", "imputation": "none"}))
+    s = benchmark.score(pd.concat(rows), ci=0.95).iloc[0]
+    assert s["FDR low"] <= s["empirical FDR"] <= s["FDR high"]
+    assert s["FDR high"] - s["FDR low"] < 0.2
+    assert s["power low"] == s["power high"] == 1.0                   # every true change was found

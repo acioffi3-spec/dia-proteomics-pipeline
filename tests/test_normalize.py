@@ -74,3 +74,23 @@ def test_cross_fit_never_uses_a_run_to_correct_itself():
     out = normalize.cross_fit(correct, m, folds=[["a", "b"], ["c", "d"]])
     assert seen == [{"c", "d"}, {"a", "b"}]                # each fold fitted on the OTHER fold only
     assert (out == 2).all().all()
+
+
+def test_rt_lowess_speedup_changes_results_negligibly(rng):
+    m, _ = _matrix(rng, n_feat=2000, n_runs=6)
+    rt = pd.Series(rng.uniform(0, 6, len(m)), index=m.index)
+    distorted = m + np.outer(np.sin(rt), rng.normal(0, 0.3, 6))          # a different RT-dependent bias per run
+    exact = normalize.rt_lowess_normalize(distorted, rt)
+    fast = normalize.rt_lowess_normalize(distorted, rt, delta=0.01 * 6)   # delta = 1% of the RT range
+    assert (exact - fast).abs().max().max() < 0.005                      # far below measurement noise (~0.1)
+
+
+def test_rt_lowess_complete_only_fits_on_fully_observed_precursors(rng):
+    m, _ = _matrix(rng, n_feat=600, n_runs=6)
+    rt = pd.Series(rng.uniform(0, 6, len(m)), index=m.index)
+    gappy = m.copy()
+    gappy.iloc[:200, 0] = np.nan                           # 200 precursors missing in one run
+    gappy.iloc[:200, 1:] += 3.0                            # ...and wildly off elsewhere: must not influence the fit
+    _, curves = normalize.rt_lowess_normalize(gappy, rt, return_curves=True, complete_only=True)
+    _, curves_subset = normalize.rt_lowess_normalize(gappy.iloc[200:], rt, return_curves=True)
+    assert np.allclose(curves["r03"].to_numpy(), curves_subset["r03"].to_numpy())

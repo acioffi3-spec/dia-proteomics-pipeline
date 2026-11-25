@@ -20,7 +20,7 @@ A step-by-step, reproducible analysis of public data-independent acquisition (DI
 flowchart LR
     A["DIA-NN report<br/>(PXD018874, 209 runs)"] --> B["<b>01 · QC</b><br/>audit inherited filters<br/>global protein-FDR rule<br/>pre-registered run flags"]
     B --> C["<b>02 · Normalize & roll up</b><br/>RT-dependent normalization<br/>sample-anchored drift correction<br/>MaxLFQ (≥ 2 shared precursors)"]
-    C --> D["<b>03 · Calibrated statistics</b><br/>moderated t (intensity trend)<br/>BH q &lt; 0.05<br/>separate on/off tier"]
+    C --> D["<b>03 · Calibrated statistics</b><br/>moderated t (intensity trend)<br/>BH q &lt; 0.05 + #124;log2FC#124; ≥ 0.58<br/>separate on/off tier"]
     D --> E["<b>stats.differential()</b><br/>any design table,<br/>e.g. DMSO vs degrader"]
     T["<b>Known truths used to grade every step</b><br/>fibrinogen positive control · technical replicates<br/>held-out QC & cross-fitting · simulated spike-ins"] -.-> B & C & D
 ```
@@ -41,9 +41,11 @@ Each row is a question the analysis had to answer, the evidence used, and the de
 | 8 | Which normalization? | Eight methods on one scorecard, always scored on runs they were not fitted on | RT-dependent normalization + sample-anchored drift correction (valid only with randomized run order) | NB02 §3–5 |
 | 9 | Which protein roll-up? | Synthetic data with known levels; a real case where single-peptide ratios turn "absent" into "equal" | MaxLFQ requiring ≥ 2 shared precursors | NB02 §6 |
 | 10 | Which statistical test? | Null calibration and spike-ins: FDR and power at n = 3, 5, 10 and three noise levels | Moderated t with an intensity-dependent prior (2.5× the power of Welch at 3 vs 3) | [NB03](notebooks/03_differential_abundance_calibration.ipynb) §3–4 |
-| 11 | Is a fold-change cutoff enough? | Fold change alone: up to 33% false hits; unadjusted p: 16–26% | BH q < 0.05, optionally plus \|log2FC\| ≥ 0.58 for relevance | NB03 §5 |
-| 12 | Impute missing values? | No gain for testing; KNN biases large changes; "absent from one group" is a true change only ~half the time | No imputation; on/off proteins in a separate, calibrated tier | NB03 §6 |
-| 13 | How many replicates does a study need? | Power by effect size, replicates and noise | ~3 per group for 2-fold changes at CV ~18%; ~10 for 1.5-fold | NB03 §8 |
+| 11 | Is our moderated t correct? | Compared with limma (the reference implementation) on a fixed dataset: plain version agreed to ~1e-10; the trend version did not (LOWESS vs limma's spline, t off by up to 3) | Switched the trend to a natural cubic spline; now matches to ~1e-10, checked on every push | NB03 §1, `tests/test_limma_crosscheck.py` |
+| 12 | Does the calibration survive a small study normalizing only its own runs? | Each simulated experiment re-normalized from raw data: null still honest, but with many unbalanced changes FDR reaches 34–42% in precise data. Dropout hypothesis tested and rejected; offset tracks the imbalance of true changes | Treat §3–4 as a best case (realistic FDR 5–10%); make the effect-size filter standard | NB03 §4b |
+| 13 | Is a fold-change cutoff enough? | Fold change alone: up to 33% false hits; unadjusted p: 16–26%; q < 0.05 plus \|log2FC\| ≥ 0.58 keeps FDR ≤ 4.2% in the stress test | BH q < 0.05 **plus** \|log2FC\| ≥ 0.58 | NB03 §4b, §5 |
+| 14 | Impute missing values? | No gain for testing; KNN biases large changes; "absent from one group" is a true change only ~half the time | No imputation; on/off proteins in a separate, calibrated tier | NB03 §6 |
+| 15 | How many replicates does a study need? | Power by effect size, replicates and noise | ~3 per group for 2-fold changes at CV ~18%; ~10 for 1.5-fold | NB03 §8 |
 
 ## Notebook 01 in one figure
 
@@ -52,7 +54,7 @@ Each row is a question the analysis had to answer, the evidence used, and the de
 Once each run's signal is corrected for instrument drift, the weak runs cluster in two rows of one plate. They were injected at random points across the 428-injection sequence, so the cause is sample preparation, not the instrument. Notebook 01 finds this with fixed QC rules that were set before looking at the data.
 
 **Other Notebook 01 findings**
-- **Technical replicates.** The plasma and serum wells are technical replicates of one material each, so all within-matrix variance is technical. Normalization in Notebook 02 can therefore be scored objectively.
+- **Technical replicates.** The plasma and serum wells are technical replicates of commercial pooled material, so nearly all within-matrix variance is technical (Notebook 03 finds a few donor-variable proteins, such as immunoglobulins, that vary more). Normalization in Notebook 02 can therefore be scored objectively.
 - **Drift.** MS signal falls 41% across the sequence, which raises the raw CV from 7% (short-term) to 21%. That variance is what normalization has to remove.
 - **Positive control.** Fibrinogen, which clotting removes from serum, comes out 16–300x higher in plasma than serum, while albumin is unchanged.
 - **Inherited filters.** The protein-group FDR filter inherited from the report is replaced by a documented rule that approximates a global FDR. Its cost is shown explicitly.
@@ -77,7 +79,8 @@ Eight normalization strategies, scored on the same scorecard and always on runs 
 Known changes are spiked into technical replicates, so every call can be graded as right or wrong.
 
 **Key Notebook 03 findings**
-- **Which test:** a moderated t-test (limma-style empirical Bayes, with an intensity-dependent prior; implemented here and validated on synthetic data) keeps the false discovery rate near 5%. At 3 vs 3 with realistic noise, it finds 70% of true changes, versus 28% for Welch's t-test.
+- **Which test:** a moderated t-test (empirical Bayes with an intensity-dependent prior; written from the equations, validated on synthetic data, and matching limma to ~1e-10) keeps the false discovery rate near 5%. At 3 vs 3 with realistic noise, it finds 70% of true changes, versus 28% for Welch's t-test.
+- **Stress test, and a correction to my own calibration:** when each small experiment normalizes only its own runs and many proteins change unevenly, the normalization shifts every protein by ~0.03 log2, and FDR climbs to 34–42% in precise data. The cause is the imbalance of the true changes, not missing values (tested and rejected). Adding |log2FC| ≥ 0.58 restores FDR to ≤ 4.2%, so it is now part of the recommended analysis.
 - **Shortcuts are unsafe:** a fold-change cutoff alone lets up to 33% false hits through, and unadjusted p < 0.05 lets 16–26% through.
 - **No imputation for testing:** KNN imputation biases large changes. Proteins absent from one group (on/off) are truly changed only about half the time, so they get their own calibrated tier (about 5% false calls).
 - **Design guidance:** with replicate CVs around 18%, 3 replicates find about 80% of 2-fold changes but only a third of 1.5-fold changes.
@@ -121,7 +124,7 @@ Then:
 2. Open the notebooks in order (`01_...`, then `02_...`) and select the project kernel. Each notebook reads the previous one's outputs from `data/processed/`.
 3. Run all cells.
 
-On a laptop with 8 GB RAM, Notebook 01 runs in about a minute, Notebook 02 in about 8 minutes (cross-fitting refits every drift curve several times) and Notebook 03 in about 5 minutes the first time (simulations; cached afterwards, set `RERUN = True` to regenerate). The first run also writes a parquet cache to `data/processed/`.
+On a laptop with 8 GB RAM, Notebook 01 runs in about a minute, Notebook 02 in about 8 minutes (cross-fitting refits every drift curve several times) and Notebook 03 in about 20 minutes the first time (simulations; cached afterwards, set `RERUN = True` to regenerate). The first run also writes a parquet cache to `data/processed/`.
 
 **Two Windows pitfalls:**
 - **Keep the project outside `Documents` and OneDrive.** Controlled Folder Access or sync software can stop Jupyter writing its checkpoint folder.
@@ -129,13 +132,15 @@ On a laptop with 8 GB RAM, Notebook 01 runs in about a minute, Notebook 02 in ab
 
 ## Tests
 
-The functions in `src/` are covered by an automated test suite (`tests/`, 38 tests, about 3 seconds), run by GitHub Actions on Python 3.12 and 3.13 on every push. Most tests check a property the notebooks rely on, using synthetic data with a known answer. For example:
+The functions in `src/` are covered by an automated test suite (`tests/`, 48 tests, about 5 seconds), run by GitHub Actions on Python 3.12 and 3.13 on every push. Most tests check a property the notebooks rely on, using synthetic data with a known answer. For example:
+- the moderated t-test reproduces limma's output (frozen reference values in `tests/data/`, plus a live comparison when the `inmoose` port of limma is installed)
 - the moderated t-test recovers a known variance prior and gives uniform p-values when nothing changes
 - the intensity-trend prior removes false positives among noisy low-abundance proteins
 - MaxLFQ recovers true protein levels despite 30% missing values, and refuses a ratio built on a single shared peptide
 - sample-anchored drift correction removes drift without removing a real group difference
 - cross-fitting never lets a run help correct itself
 - simulated spike-ins only remove values that went down, and FDR/power scoring counts wrong-direction calls as false
+- simulated experiments are normalized using only their own runs, and bootstrap intervals bracket the FDR estimate
 
 ```bash
 python -m pip install -r requirements-dev.txt
@@ -147,6 +152,7 @@ python -m ruff check src tests   # code style
 
 - **No access to the raw search.** The spectral library, protein inference and DIA-NN version (1.7.10) are inherited. With raw-data access, a re-search in DIA-NN ≥ 1.8 would provide a proper global protein q-value in place of the rule in decision 4.
 - **The statistical calibration is semi-synthetic.** Spike-ins into technical replicates cannot reproduce ratio compression from interfering peptides in real mixtures. A validation on a real hybrid-proteome benchmark is planned (Notebook 04).
+- **The plasma wells are not perfectly identical.** A few donor-variable proteins vary 5–14× more between wells than in the pooled QC. Random splits keep the tests valid, but false calls among co-varying proteins come in bursts, so FDR estimates carry bootstrap intervals.
 - **One dataset so far.** The normalization assumptions (most peptides unchanged in each run; randomized run order) are checked here and must be re-checked for every new design.
 
 ## Repository layout
@@ -169,6 +175,7 @@ src/            reusable functions, documented and imported by the notebooks
   benchmark.py  run simulation grids and score empirical FDR, power and fold-change accuracy
   plotting.py   shared figure style and colour palette
 tests/          automated tests for src/ (pytest), run on every push
+  data/         frozen limma reference values and the script that regenerates them
 figures/        exported figures (PNG)
 .github/        continuous-integration workflow (tests + code style)
 ```

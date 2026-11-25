@@ -13,18 +13,34 @@ from . import impute, rollup, simulate, stats
 
 def simulate_once(log2_precursors, protein_of, pool_runs, n_per_group, rng, noise_sd=0.0,
                   fraction_changed=0.2, fold_changes=(-2, -1, -0.58, 0.58, 1, 2),
-                  tests=("welch", "moderated"), imputations=("none",)):
+                  tests=("welch", "moderated"), imputations=("none",), normalize=None, batches=None):
     """One simulated two-group experiment. Returns one row per protein x test x imputation.
 
     Parameters
     ----------
-    log2_precursors : normalized precursor matrix (precursors x runs, log2)
+    log2_precursors : precursor matrix (precursors x runs, log2). Either already
+        normalized (default) or raw, in which case pass ``normalize``.
     protein_of : Series precursor -> protein group
     pool_runs : runs that are replicates of one material (here: plasma wells)
     noise_sd : extra between-sample SD (log2) at protein level; 0 = technical noise only
     fraction_changed, fold_changes : how many proteins change, and by how much (log2)
+    normalize : optional function matrix -> matrix, applied to THIS experiment's runs
+        only, after the simulated biology (noise, spike-ins) and before roll-up -
+        the same order as a real study: samples differ, then they are measured,
+        then the measurements are normalized using only the runs that exist.
+    batches : optional Series run -> batch (e.g. plate). If given, all runs of one
+        experiment come from a single randomly chosen batch, as a small study
+        acquired in one sequence would.
     """
-    runs_a, runs_b = simulate.random_split(pool_runs, n_per_group, rng)
+    pool = pd.Index(pool_runs)
+    if batches is not None:
+        b = batches.reindex(pool)
+        sizes = b.value_counts()
+        big_enough = sizes.index[sizes >= 2 * n_per_group].sort_values()
+        if len(big_enough) == 0:
+            raise ValueError(f"no batch has {2 * n_per_group} runs")
+        pool = b.index[b == rng.choice(big_enough)]
+    runs_a, runs_b = simulate.random_split(pool, n_per_group, rng)
     prec = log2_precursors[runs_a + runs_b].dropna(how="all")
 
     # The truth is assigned to proteins that can be quantified (>= 2 precursors)
@@ -35,6 +51,8 @@ def simulate_once(log2_precursors, protein_of, pool_runs, n_per_group, rng, nois
     prec = simulate.add_biological_noise(prec, protein_of, noise_sd, rng)
     if fraction_changed > 0:
         prec = simulate.spike_in(prec, protein_of, truth, runs_b, rng)
+    if normalize is not None:
+        prec = normalize(prec)
     proteins = rollup.rollup(prec, protein_of, rollup.maxlfq, min_ratio_count=2)
     proteins = proteins.loc[proteins.index.intersection(truth.index)]
 
@@ -55,12 +73,13 @@ def simulate_once(log2_precursors, protein_of, pool_runs, n_per_group, rng, nois
 
 def run_grid(log2_precursors, protein_of, pool_runs, n_sims, seed=0,
              tests=("welch", "moderated"), imputations=("none",),
-             fold_changes=(-2, -1, -0.58, 0.58, 1, 2), **conditions):
+             fold_changes=(-2, -1, -0.58, 0.58, 1, 2), normalize=None, batches=None, **conditions):
     """Repeat ``simulate_once`` over every combination of the given conditions.
 
     tests, imputations : fixed for every simulation (each simulated dataset is
         analysed with all of them, so they are compared on identical data)
     fold_changes : the set of true log2 fold changes to draw from (fixed)
+    normalize, batches : passed to ``simulate_once`` (fixed)
     conditions : lists for any of n_per_group, noise_sd, fraction_changed, e.g.
         run_grid(..., n_per_group=[3, 5], noise_sd=[0, 0.25])
     """
@@ -74,7 +93,8 @@ def run_grid(log2_precursors, protein_of, pool_runs, n_sims, seed=0,
             kw["n_per_group"] = int(kw["n_per_group"])
         for sim in range(n_sims):
             res = simulate_once(log2_precursors, protein_of, pool_runs, rng=rng,
-                                tests=tests, imputations=imputations, fold_changes=fold_changes, **kw)
+                                tests=tests, imputations=imputations, fold_changes=fold_changes,
+                                normalize=normalize, batches=batches, **kw)
             for k, v in cond.items():
                 res[k] = v
             res["sim"] = sim
@@ -82,13 +102,20 @@ def run_grid(log2_precursors, protein_of, pool_runs, n_sims, seed=0,
     return pd.concat(out, ignore_index=True)
 
 
-def score(results, alpha=0.05, by=("n_per_group", "noise_sd", "test", "imputation"), min_abs_fc=0.0):
+def score(results, alpha=0.05, by=("n_per_group", "noise_sd", "test", "imputation"), min_abs_fc=0.0,
+          ci=None, n_boot=2000, seed=0):
     """Empirical FDR and power at a q-value cutoff, pooled over simulations.
 
     A call = q < alpha (and |log2fc| >= min_abs_fc, if given).
     Empirical FDR = false calls / all calls, pooled across simulations
     (pooling avoids noisy per-simulation ratios when there are few calls).
     Power = true calls / truly changed proteins that were testable.
+
+    ci : e.g. 0.95 to add bootstrap confidence intervals ("FDR low", "FDR high",
+        "power low", "power high"). Whole simulations are resampled, because
+        false calls are not independent: proteins that co-vary (e.g. several
+        immunoglobulins) tend to be called falsely together in the same
+        experiment, so one unlucky simulation can contribute many false calls.
     """
     r = results[results["p"].notna()].copy()        # everything this variant could test
     r["called"] = (r["q"] < alpha) & (r["log2fc"].abs() >= min_abs_fc)
@@ -102,6 +129,22 @@ def score(results, alpha=0.05, by=("n_per_group", "noise_sd", "test", "imputatio
         "empirical FDR": g["false_call"].sum() / g["called"].sum().replace(0, np.nan),
         "power": g["true_call"].sum() / g["changed"].sum(),
     })
+    if ci is not None:
+        rng = np.random.default_rng(seed)
+        per_sim = r.groupby(list(by) + ["sim"])[["called", "false_call", "true_call", "changed"]].sum()
+        lo_q, hi_q = (1 - ci) / 2, 1 - (1 - ci) / 2
+        bounds = {}
+        for key, sims in per_sim.groupby(level=list(range(len(by)))):
+            counts = sims.to_numpy(float)                                   # simulations x 4 counts
+            pick = rng.integers(0, len(counts), (n_boot, len(counts)))     # resample whole simulations
+            tot = counts[pick].sum(axis=1)                                  # n_boot x 4
+            with np.errstate(invalid="ignore", divide="ignore"):
+                fdr, power = tot[:, 1] / tot[:, 0], tot[:, 2] / tot[:, 3]
+            bounds[key] = [np.nanquantile(fdr, lo_q), np.nanquantile(fdr, hi_q),
+                           np.nanquantile(power, lo_q), np.nanquantile(power, hi_q)]
+        b = pd.DataFrame(bounds, index=["FDR low", "FDR high", "power low", "power high"]).T
+        b.index.names = list(by)
+        out = out.join(b)
     return out
 
 

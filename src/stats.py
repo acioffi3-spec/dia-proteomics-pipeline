@@ -96,29 +96,69 @@ def fit_variance_prior(s2, df):
     return float(d0), float(s0_sq)
 
 
-def fit_variance_prior_trend(s2, df, covariate, frac=0.5):
+def natural_spline_basis(x, knots):
+    """Natural cubic spline basis (with intercept) for the given knots.
+
+    A natural cubic spline is cubic between knots and straight beyond the
+    outer knots, so it cannot swing wildly at the ends of the data. With K
+    knots the space has K basis functions (Hastie, Tibshirani & Friedman,
+    Elements of Statistical Learning, eq. 5.4-5.5):
+        N1 = 1, N2 = x, N(k+2) = d_k(x) - d_(K-1)(x),
+        d_k(x) = [(x - knot_k)^3_+ - (x - knot_K)^3_+] / (knot_K - knot_k).
+    Any basis that spans this space gives the same least-squares fit, so this
+    reproduces R's ``splines::ns(x, intercept=TRUE)`` fitted values.
+    """
+    x = np.asarray(x, float)
+    k = np.sort(np.asarray(knots, float))
+    scale = k[-1] - k[0]                                     # rescale to [0, 1] for numerical stability
+    x, k = (x - k[0]) / scale, (k - k[0]) / scale
+
+    def d(j):
+        return (np.clip(x - k[j], 0, None) ** 3 - np.clip(x - k[-1], 0, None) ** 3) / (k[-1] - k[j])
+
+    cols = [np.ones_like(x), x] + [d(j) - d(len(k) - 2) for j in range(len(k) - 2)]
+    return np.column_stack(cols)
+
+
+def fit_variance_prior_trend(s2, df, covariate):
     """Like ``fit_variance_prior``, but the prior variance depends on a covariate (intensity).
 
     In proteomics, low-abundance proteins are noisier. A single prior pulls
     their variances DOWN towards the typical value, which inflates their t
     statistics and produces false positives. Here the typical log-variance is
-    a smooth (LOWESS) function of average log2 intensity, as in limma's
-    eBayes(trend=TRUE).
+    a smooth function of average log2 intensity.
+
+    The smooth is a natural cubic spline with up to 4 degrees of freedom
+    (knots at the range and tertiles of the covariate), fitted by least
+    squares - the same choice as limma's eBayes(trend=TRUE). A low-df global
+    curve is preferred over a local smoother (an earlier version used LOWESS)
+    because with ~150 proteins a local fit chases noise at the intensity
+    extremes, and matching limma exactly makes the implementation verifiable
+    (see tests/test_limma_crosscheck.py).
 
     Returns
     -------
     d0 : prior degrees of freedom (one value)
     s0_sq : prior variance for each feature (array, follows its intensity)
     """
-    from statsmodels.nonparametric.smoothers_lowess import lowess
-
     s2, df, covariate = (np.asarray(v, float) for v in (s2, df, covariate))
-    ok = np.isfinite(s2) & (s2 > 0) & np.isfinite(df) & (df > 0) & np.isfinite(covariate)
-    e = np.log(s2[ok]) - special.digamma(df[ok] / 2) + np.log(df[ok] / 2)
-    fit = lowess(e, covariate[ok], frac=frac, return_sorted=True)
-    e_trend_all = np.interp(covariate, fit[:, 0], fit[:, 1])          # trend at every feature
-    resid = e - e_trend_all[ok]
-    e_var = np.mean(resid ** 2) * len(resid) / (len(resid) - 1) - np.mean(special.polygamma(1, df[ok] / 2))
+    ok = np.isfinite(s2) & (s2 >= 0) & np.isfinite(df) & (df > 0) & np.isfinite(covariate)
+    s2_ok = s2[ok]
+    s2_ok = np.maximum(s2_ok, 1e-5 * np.median(s2_ok))      # an exactly-zero variance would give log(0)
+    e = np.log(s2_ok) - special.digamma(df[ok] / 2) + np.log(df[ok] / 2)
+    n_ok = int(ok.sum())
+    spline_df = min(1 + (n_ok >= 3) + (n_ok >= 6) + (n_ok >= 30), len(np.unique(covariate[ok])))
+    if spline_df < 2:                                       # too few points for a trend: constant prior
+        d0, s0 = fit_variance_prior(s2, df)
+        return d0, np.full(len(s2), s0)
+    lo, hi = covariate[ok].min(), covariate[ok].max()
+    knots = np.r_[lo, np.quantile(covariate[ok], np.arange(1, spline_df - 1) / (spline_df - 1)), hi]
+    basis = natural_spline_basis(covariate[ok], knots)
+    coef, *_ = np.linalg.lstsq(basis, e, rcond=None)
+    resid = e - basis @ coef
+    e_trend_all = natural_spline_basis(covariate, knots) @ coef        # trend at every feature (linear beyond range)
+    # Residual variance with the spline's degrees of freedom removed, minus the sampling noise of log(s^2)
+    e_var = np.sum(resid ** 2) / (n_ok - basis.shape[1]) - np.mean(special.polygamma(1, df[ok] / 2))
     if e_var > 0:
         d0 = float(2 * _trigamma_inverse(e_var))
         s0_sq = np.exp(e_trend_all + special.digamma(d0 / 2) - np.log(d0 / 2))
@@ -156,11 +196,13 @@ def moderated_t(log2_matrix, runs_a, runs_b, min_per_group=2, return_prior=False
         s0_sq[testable] = s0_trend
     else:
         d0, s0_sq = fit_variance_prior(s2[testable], d[testable].astype(float))
+    df_pooled = float(np.nansum(np.where(testable, d, 0)))    # all residual df in the experiment
     if np.isinf(d0):
-        s2_mod, df_total = np.broadcast_to(s0_sq, s2.shape).astype(float), np.full_like(s2, 1e6)
+        s2_mod, df_total = np.broadcast_to(s0_sq, s2.shape).astype(float), np.full_like(s2, df_pooled)
     else:
         s2_mod = (d0 * s0_sq + d * s2) / (d0 + d)
-        df_total = d0 + d
+        # A feature cannot carry more information than the whole experiment (limma caps df the same way)
+        df_total = np.minimum(d0 + d, df_pooled)
     with np.errstate(invalid="ignore", divide="ignore"):
         t = (mb - ma) / np.sqrt(s2_mod * (1 / na + 1 / nb))
     p = 2 * stats.t.sf(np.abs(t), df_total)
@@ -231,6 +273,10 @@ RECOMMENDED = {
     "alpha": 0.05,                 # BH-adjusted q-value cutoff
     "min_per_group": 2,            # values needed in EACH group to test without imputation
     "on_off_imputation": "down-shifted normal",   # only for proteins absent from one group
+    # Effect-size filter on top of q < alpha. Normalization anchored on "the bulk" of each run shifts
+    # every protein a little when the true changes are unbalanced; with precise data that offset alone
+    # becomes "significant". The filter keeps FDR <= ~4% in Notebook 03's stress test (section 4b).
+    "min_abs_fc": 0.58,
 }
 
 
@@ -249,7 +295,10 @@ def differential(log2_matrix, design, group_a, group_b, alpha=0.05, min_abs_fc=0
     Parameters
     ----------
     design : Series run -> group label; log2fc = group_b - group_a
-    min_abs_fc : optional effect-size filter applied on top of q < alpha
+    min_abs_fc : effect-size filter (|log2FC|) applied on top of q < alpha. The default
+        0.0 shows every statistically significant change; Notebook 03 recommends
+        RECOMMENDED["min_abs_fc"] (0.58, i.e. 1.5-fold) for calling hits, because
+        normalization offsets otherwise inflate FDR when data are precise.
 
     Returns
     -------

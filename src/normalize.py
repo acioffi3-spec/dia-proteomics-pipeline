@@ -26,7 +26,7 @@ def median_normalize(log2_matrix):
     return log2_matrix.sub(offset, axis=1)
 
 
-def rt_lowess_normalize(log2_matrix, rt, frac=0.3, return_curves=False):
+def rt_lowess_normalize(log2_matrix, rt, frac=0.3, return_curves=False, delta=0.0, complete_only=False):
     """Retention-time-dependent normalization (one smooth curve per run).
 
     For each run, compute every precursor's deviation from that precursor's
@@ -43,15 +43,28 @@ def rt_lowess_normalize(log2_matrix, rt, frac=0.3, return_curves=False):
     rt : Series of median retention time per precursor (same index as the matrix)
     frac : LOWESS span (fraction of points used for each local fit). Small values
         follow the data closely; large values give a smoother curve.
+    delta : speed-up (statsmodels LOWESS): points closer than ``delta`` in RT reuse
+        a neighbour's local fit instead of getting their own. 0 = exact. About 1%
+        of the RT range makes it ~10x faster with a negligible change (checked in
+        tests/test_normalize.py); useful when normalizing thousands of simulated
+        experiments.
+    complete_only : fit the curves only on precursors quantified in EVERY run
+        (the curves are still applied to all precursors). Missing values are not
+        random: a strongly decreased peptide drops below detection, so among the
+        values that remain, increases could outnumber decreases and pull a run's
+        curve up. Restricting the fit to precursors seen everywhere removes that
+        particular imbalance. (Notebook 03, section 4b, tests this idea and finds
+        it is NOT the main source of normalization error in small experiments.)
     """
     reference = log2_matrix.median(axis=1)           # each precursor's typical level
     rt = rt.reindex(log2_matrix.index)
+    use = log2_matrix.notna().all(axis=1) if complete_only else pd.Series(True, index=log2_matrix.index)
     corrected = log2_matrix.copy()
     curves = {}
     for run in log2_matrix.columns:
         deviation = log2_matrix[run] - reference
-        ok = deviation.notna() & rt.notna()
-        fit = lowess(deviation[ok], rt[ok], frac=frac, return_sorted=True)
+        ok = deviation.notna() & rt.notna() & use
+        fit = lowess(deviation[ok], rt[ok], frac=frac, delta=delta, return_sorted=True)
         curve = np.interp(rt, fit[:, 0], fit[:, 1])  # the curve evaluated at every precursor's RT
         corrected[run] = log2_matrix[run] - curve
         curves[run] = pd.Series(fit[:, 1], index=fit[:, 0])
