@@ -1,0 +1,13 @@
+# Tool configuration (tests and code-style checks). Dependencies are pinned in requirements*.txt.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+# E/W: style errors and warnings, F: real bugs (undefined names, unused imports), I: import order
+select = ["E", "W", "F", "I"]
+ignore = ["E702"]   # allow "a; b" on one line inside short numeric loops (used in rollup.median_polish)

@@ -1,5 +1,7 @@
 # DIA proteomics analysis pipeline in Python
 
+[![tests](https://github.com/acioffi3-spec/dia-proteomics-pipeline/actions/workflows/tests.yml/badge.svg)](https://github.com/acioffi3-spec/dia-proteomics-pipeline/actions/workflows/tests.yml)
+
 A step-by-step, reproducible analysis of public data-independent acquisition (DIA) proteomics data: from a DIA-NN report through quality control, normalization and statistical testing. Every analytical decision is stated, justified, and checked against something known to be true.
 
 **Author:** Alex Cioffi, Ph.D. · [cioffiscientific.com](https://cioffiscientific.com)
@@ -11,6 +13,37 @@ A step-by-step, reproducible analysis of public data-independent acquisition (DI
 | 01 | [Import and quality control](notebooks/01_import_and_qc.ipynb) | Plasma/serum SWATH, DIA-NN (PXD018874) | ✅ |
 | 02 | [Normalization, drift correction and protein roll-up](notebooks/02_normalization_and_rollup.ipynb) | same | ✅ |
 | 03 | [Differential abundance calibrated against a known truth](notebooks/03_differential_abundance_calibration.ipynb) | same, with simulated known changes | ✅ |
+
+## Pipeline at a glance
+
+```mermaid
+flowchart LR
+    A["DIA-NN report<br/>(PXD018874, 209 runs)"] --> B["<b>01 · QC</b><br/>audit inherited filters<br/>global protein-FDR rule<br/>pre-registered run flags"]
+    B --> C["<b>02 · Normalize & roll up</b><br/>RT-dependent normalization<br/>sample-anchored drift correction<br/>MaxLFQ (≥ 2 shared precursors)"]
+    C --> D["<b>03 · Calibrated statistics</b><br/>moderated t (intensity trend)<br/>BH q &lt; 0.05<br/>separate on/off tier"]
+    D --> E["<b>stats.differential()</b><br/>any design table,<br/>e.g. DMSO vs degrader"]
+    T["<b>Known truths used to grade every step</b><br/>fibrinogen positive control · technical replicates<br/>held-out QC & cross-fitting · simulated spike-ins"] -.-> B & C & D
+```
+
+## Decision log
+
+Each row is a question the analysis had to answer, the evidence used, and the decision taken. Decisions are justified from the data, not copied from the original authors; where they agree or disagree, the notebook shows why.
+
+| # | Question | Evidence | Decision | Where |
+|---|---|---|---|---|
+| 1 | What filtering did the report already have? | Maximum q-value per column; confirmed by the authors' methods | Tighten filters, never loosen them | [NB01](notebooks/01_import_and_qc.ipynb) §2 |
+| 2 | Is the last number in each run name the injection order? | Unique per run; pooled QC every 10–11; smooth signal decline across it | Used as injection order, with the evidence shown | NB01 §3 |
+| 3 | Can peak width be used for QC? | `RT.Stop − RT.Start` is a constant 4.44 s window, not a measurement | Dropped: a metric that cannot vary cannot warn | NB01 §4 |
+| 4 | Protein-group FDR: 1% per run? | Per-run q-values resolve only ~1/180; a strict per-run rule empties 42 of 209 runs; the "best run" rule is a multiple-testing trap | Keep a protein group if q ≤ 1% in ≥ 25% of runs of one matrix; checked against two alternatives | NB01 §5, [NB02](notebooks/02_normalization_and_rollup.ipynb) §8 |
+| 5 | Which runs to exclude? | Thresholds fixed before looking; exclude only with ≥ 2 hard flags | 4 runs excluded; a plate-3 pattern found afterwards is flagged, not used to move thresholds | NB01 §13, NB02 §5 |
+| 6 | Is drift the same for every peptide, and linear? | Drift rate depends on retention time (ρ = −0.74), reproducible (split-half r = 0.93), with a step at injection ~200 | Global scaling is insufficient, and a straight-line correction is the wrong shape | NB01 §9b |
+| 7 | Correct drift against the pooled QC? | The QC drifts ~1.2× faster than the samples; 18% of peptides have no QC anchor | QC used for monitoring, not correction | NB02 §4 |
+| 8 | Which normalization? | Eight methods on one scorecard, always scored on runs they were not fitted on | RT-dependent normalization + sample-anchored drift correction (valid only with randomized run order) | NB02 §3–5 |
+| 9 | Which protein roll-up? | Synthetic data with known levels; a real case where single-peptide ratios turn "absent" into "equal" | MaxLFQ requiring ≥ 2 shared precursors | NB02 §6 |
+| 10 | Which statistical test? | Null calibration and spike-ins: FDR and power at n = 3, 5, 10 and three noise levels | Moderated t with an intensity-dependent prior (2.5× the power of Welch at 3 vs 3) | [NB03](notebooks/03_differential_abundance_calibration.ipynb) §3–4 |
+| 11 | Is a fold-change cutoff enough? | Fold change alone: up to 33% false hits; unadjusted p: 16–26% | BH q < 0.05, optionally plus \|log2FC\| ≥ 0.58 for relevance | NB03 §5 |
+| 12 | Impute missing values? | No gain for testing; KNN biases large changes; "absent from one group" is a true change only ~half the time | No imputation; on/off proteins in a separate, calibrated tier | NB03 §6 |
+| 13 | How many replicates does a study need? | Power by effect size, replicates and noise | ~3 per group for 2-fold changes at CV ~18%; ~10 for 1.5-fold | NB03 §8 |
 
 ## Notebook 01 in one figure
 
@@ -94,6 +127,28 @@ On a laptop with 8 GB RAM, Notebook 01 runs in about a minute, Notebook 02 in ab
 - **Keep the project outside `Documents` and OneDrive.** Controlled Folder Access or sync software can stop Jupyter writing its checkpoint folder.
 - **Keep the data file name exactly as PRIDE provides it** (`data.diannoutput.qc.tsv`). If you ever rename files, turn on File Explorer → View → Show → File name extensions first, so a hidden second extension (`.tsv.tsv`) cannot creep in.
 
+## Tests
+
+The functions in `src/` are covered by an automated test suite (`tests/`, 38 tests, about 3 seconds), run by GitHub Actions on Python 3.12 and 3.13 on every push. Most tests check a property the notebooks rely on, using synthetic data with a known answer. For example:
+- the moderated t-test recovers a known variance prior and gives uniform p-values when nothing changes
+- the intensity-trend prior removes false positives among noisy low-abundance proteins
+- MaxLFQ recovers true protein levels despite 30% missing values, and refuses a ratio built on a single shared peptide
+- sample-anchored drift correction removes drift without removing a real group difference
+- cross-fitting never lets a run help correct itself
+- simulated spike-ins only remove values that went down, and FDR/power scoring counts wrong-direction calls as false
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest            # tests
+python -m ruff check src tests   # code style
+```
+
+## Known limitations
+
+- **No access to the raw search.** The spectral library, protein inference and DIA-NN version (1.7.10) are inherited. With raw-data access, a re-search in DIA-NN ≥ 1.8 would provide a proper global protein q-value in place of the rule in decision 4.
+- **The statistical calibration is semi-synthetic.** Spike-ins into technical replicates cannot reproduce ratio compression from interfering peptides in real mixtures. A validation on a real hybrid-proteome benchmark is planned (Notebook 04).
+- **One dataset so far.** The normalization assumptions (most peptides unchanged in each run; randomized run order) are checked here and must be re-checked for every new design.
+
 ## Repository layout
 
 ```
@@ -113,7 +168,9 @@ src/            reusable functions, documented and imported by the notebooks
   simulate.py   null splits, biological noise, precursor-level spike-ins with detection loss
   benchmark.py  run simulation grids and score empirical FDR, power and fold-change accuracy
   plotting.py   shared figure style and colour palette
+tests/          automated tests for src/ (pytest), run on every push
 figures/        exported figures (PNG)
+.github/        continuous-integration workflow (tests + code style)
 ```
 
 ## Conventions

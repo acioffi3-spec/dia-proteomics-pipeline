@@ -10,3 +10,5 @@ __pycache__/
 .ipynb_checkpoints/
 .venv/
 .DS_Store
+.pytest_cache/
+.ruff_cache/

@@ -1,0 +1,28 @@
+# Runs the code-style checks and the test suite on every push and pull request.
+# The tests use synthetic data only, so no data download is needed.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Code style (ruff)
+        run: python -m ruff check src tests
+      - name: Tests (pytest)
+        run: python -m pytest -q

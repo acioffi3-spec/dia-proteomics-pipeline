@@ -7,10 +7,8 @@ Text is always neutral ink, never the series colour.
 """
 from pathlib import Path
 
-import numpy as np
-
 import matplotlib as mpl
-import matplotlib.pyplot as plt
+import numpy as np
 
 # Categorical slots 1-3 of a colour-vision-deficiency-checked palette.
 SAMPLE_COLORS = {"Plasma": "#2a78d6", "Serum": "#eb6834", "tQC": "#1baf7a"}
